@@ -37,8 +37,6 @@
 
 
 #include "drivers/adc.h"
-#include "drivers/rx_pwm.h"
-#include "drivers/rx_spi.h"
 #include "drivers/serial.h"
 #include "drivers/time.h"
 
@@ -53,25 +51,18 @@
 
 #include "rx/rx.h"
 #include "rx/crsf.h"
-#include "rx/eleres.h"
 #include "rx/ibus.h"
 #include "rx/jetiexbus.h"
 #include "rx/fport.h"
 #include "rx/fport2.h"
 #include "rx/msp.h"
 #include "rx/msp_override.h"
-#include "rx/pwm.h"
-#include "rx/rx_spi.h"
 #include "rx/sbus.h"
 #include "rx/spektrum.h"
 #include "rx/srxl2.h"
 #include "rx/sumd.h"
-#include "rx/sumh.h"
-#include "rx/xbus.h"
 #include "rx/ghst.h"
 #include "rx/mavlink.h"
-
-//#define DEBUG_RX_SIGNAL_LOSS
 
 const char rcChannelLetters[] = "AERT";
 
@@ -110,11 +101,8 @@ rxLinkStatistics_t rxLinkStatistics;
 rxRuntimeConfig_t rxRuntimeConfig;
 static uint8_t rcSampleIndex = 0;
 
-PG_REGISTER_WITH_RESET_TEMPLATE(rxConfig_t, rxConfig, PG_RX_CONFIG, 9);
+PG_REGISTER_WITH_RESET_TEMPLATE(rxConfig_t, rxConfig, PG_RX_CONFIG, 12);
 
-#ifndef RX_SPI_DEFAULT_PROTOCOL
-#define RX_SPI_DEFAULT_PROTOCOL 0
-#endif
 #ifndef SERIALRX_PROVIDER
 #define SERIALRX_PROVIDER 0
 #endif
@@ -129,9 +117,6 @@ PG_RESET_TEMPLATE(rxConfig_t, rxConfig,
     .rcmap = {0, 1, 3, 2},      // Default to AETR map
     .halfDuplex = SETTING_SERIALRX_HALFDUPLEX_DEFAULT,
     .serialrx_provider = SERIALRX_PROVIDER,
-#ifdef USE_RX_SPI
-    .rx_spi_protocol = RX_SPI_DEFAULT_PROTOCOL,
-#endif
 #ifdef USE_SPEKTRUM_BIND
     .spektrum_sat_bind = SETTING_SPEKTRUM_SAT_BIND_DEFAULT,
 #endif
@@ -144,7 +129,9 @@ PG_RESET_TEMPLATE(rxConfig_t, rxConfig,
     .rssiMin = SETTING_RSSI_MIN_DEFAULT,
     .rssiMax = SETTING_RSSI_MAX_DEFAULT,
     .sbusSyncInterval = SETTING_SBUS_SYNC_INTERVAL_DEFAULT,
-    .rcFilterFrequency = SETTING_RC_FILTER_FREQUENCY_DEFAULT,
+    .rcFilterFrequency = SETTING_RC_FILTER_LPF_HZ_DEFAULT,
+    .autoSmooth = SETTING_RC_FILTER_AUTO_DEFAULT,
+    .autoSmoothFactor = SETTING_RC_FILTER_SMOOTHING_FACTOR_DEFAULT,
 #if defined(USE_RX_MSP) && defined(USE_MSP_RC_OVERRIDE)
     .mspOverrideChannels = SETTING_MSP_OVERRIDE_CHANNELS_DEFAULT,
 #endif
@@ -179,7 +166,8 @@ static uint16_t nullReadRawRC(const rxRuntimeConfig_t *rxRuntimeConfig, uint8_t 
 {
     UNUSED(rxRuntimeConfig);
     UNUSED(channel);
-    return PPM_RCVR_TIMEOUT;
+
+    return 0;
 }
 
 static uint8_t nullFrameStatus(rxRuntimeConfig_t *rxRuntimeConfig)
@@ -221,17 +209,6 @@ bool serialRxInit(const rxConfig_t *rxConfig, rxRuntimeConfig_t *rxRuntimeConfig
 #ifdef USE_SERIALRX_SUMD
     case SERIALRX_SUMD:
         enabled = sumdInit(rxConfig, rxRuntimeConfig);
-        break;
-#endif
-#ifdef USE_SERIALRX_SUMH
-    case SERIALRX_SUMH:
-        enabled = sumhInit(rxConfig, rxRuntimeConfig);
-        break;
-#endif
-#ifdef USE_SERIALRX_XBUS
-    case SERIALRX_XBUS_MODE_B:
-    case SERIALRX_XBUS_MODE_B_RJ01:
-        enabled = xBusInit(rxConfig, rxRuntimeConfig);
         break;
 #endif
 #ifdef USE_SERIALRX_IBUS
@@ -285,7 +262,6 @@ void rxInit(void)
     rxRuntimeConfig.rcReadRawFn = nullReadRawRC;
     rxRuntimeConfig.rcFrameStatusFn = nullFrameStatus;
     rxRuntimeConfig.rxSignalTimeout = DELAY_10_HZ;
-    rxRuntimeConfig.requireFiltering = false;
     rcSampleIndex = 0;
 
     timeMs_t nowMs = millis();
@@ -317,15 +293,6 @@ void rxInit(void)
     }
 
     switch (rxConfig()->receiverType) {
-#if defined(USE_RX_PPM)
-        case RX_TYPE_PPM:
-            if (!rxPpmInit(&rxRuntimeConfig)) {
-                rxConfigMutable()->receiverType = RX_TYPE_NONE;
-                rxRuntimeConfig.rcReadRawFn = nullReadRawRC;
-                rxRuntimeConfig.rcFrameStatusFn = nullFrameStatus;
-            }
-            break;
-#endif
 
 #ifdef USE_SERIAL_RX
         case RX_TYPE_SERIAL:
@@ -340,16 +307,6 @@ void rxInit(void)
 #ifdef USE_RX_MSP
         case RX_TYPE_MSP:
             rxMspInit(rxConfig(), &rxRuntimeConfig);
-            break;
-#endif
-
-#ifdef USE_RX_SPI
-        case RX_TYPE_SPI:
-            if (!rxSpiInit(rxConfig(), &rxRuntimeConfig)) {
-                rxConfigMutable()->receiverType = RX_TYPE_NONE;
-                rxRuntimeConfig.rcReadRawFn = nullReadRawRC;
-                rxRuntimeConfig.rcFrameStatusFn = nullFrameStatus;
-            }
             break;
 #endif
 
@@ -477,39 +434,6 @@ bool rxUpdateCheck(timeUs_t currentTimeUs, timeDelta_t currentDeltaTime)
     return result;
 }
 
-#define FILTERING_SAMPLE_COUNT  5
-static uint16_t applyChannelFiltering(uint8_t chan, uint16_t sample)
-{
-    static int16_t rcSamples[MAX_SUPPORTED_RC_CHANNEL_COUNT][FILTERING_SAMPLE_COUNT];
-    static bool rxSamplesCollected = false;
-
-    // Update the recent samples
-    rcSamples[chan][rcSampleIndex % FILTERING_SAMPLE_COUNT] = sample;
-
-    // Until we have enough data - return unfiltered samples
-    if (!rxSamplesCollected) {
-        if (rcSampleIndex < FILTERING_SAMPLE_COUNT) {
-            return sample;
-        }
-        rxSamplesCollected = true;
-    }
-
-    // Assuming a step transition from 1000 -> 2000 different filters will yield the following output:
-    //  No filter:              1000, 2000, 2000, 2000, 2000        - 0 samples delay
-    //  3-point moving average: 1000, 1333, 1667, 2000, 2000        - 2 samples delay
-    //  3-point median:         1000, 1000, 2000, 2000, 2000        - 1 sample delay
-    //  5-point median:         1000, 1000, 1000, 2000, 2000        - 2 sample delay
-
-    // For the same filters - noise rejection capabilities (2 out of 5 outliers
-    //  No filter:              1000, 2000, 1000, 2000, 1000, 1000, 1000
-    //  3-point MA:             1000, 1333, 1333, 1667, 1333, 1333, 1000    - noise has reduced magnitude, but spread over more samples
-    //  3-point median:         1000, 1000, 1000, 2000, 1000, 1000, 1000    - high density noise is not removed
-    //  5-point median:         1000, 1000, 1000, 1000, 1000, 1000, 1000    - only 3 out of 5 outlier noise will get through
-
-    // Apply 5-point median filtering. This filter has the same delay as 3-point moving average, but better noise rejection
-    return quickMedianFilter5_16(rcSamples[chan]);
-}
-
 bool calculateRxChannelsAndUpdateFailsafe(timeUs_t currentTimeUs)
 {
     int16_t rcStaging[MAX_SUPPORTED_RC_CHANNEL_COUNT];
@@ -530,7 +454,7 @@ bool calculateRxChannelsAndUpdateFailsafe(timeUs_t currentTimeUs)
     }
 
     rxDataProcessingRequired = false;
-    rxNextUpdateAtUs = currentTimeUs + DELAY_50_HZ;
+    rxNextUpdateAtUs = currentTimeUs + DELAY_10_HZ;
 
     // only proceed when no more samples to skip and suspend period is over
     if (skipRxSamples) {
@@ -551,7 +475,7 @@ bool calculateRxChannelsAndUpdateFailsafe(timeUs_t currentTimeUs)
         uint16_t sample = (*rxRuntimeConfig.rcReadRawFn)(&rxRuntimeConfig, rawChannel);
 
         // apply the rx calibration to flight channel
-        if (channel < NON_AUX_CHANNEL_COUNT && sample != PPM_RCVR_TIMEOUT) {
+        if (channel < NON_AUX_CHANNEL_COUNT && sample != 0) {
             sample = scaleRange(sample, rxChannelRangeConfigs(channel)->min, rxChannelRangeConfigs(channel)->max, PWM_RANGE_MIN, PWM_RANGE_MAX);
             sample = MIN(MAX(PWM_PULSE_MIN, sample), PWM_PULSE_MAX);
         }
@@ -576,14 +500,8 @@ bool calculateRxChannelsAndUpdateFailsafe(timeUs_t currentTimeUs)
     // Update channel input value if receiver is not in failsafe mode
     // If receiver is in failsafe (not receiving signal or sending invalid channel values) - last good input values are retained
     if (rxFlightChannelsValid && rxSignalReceived) {
-        if (rxRuntimeConfig.requireFiltering) {
-            for (int channel = 0; channel < rxChannelCount; channel++) {
-                rcChannels[channel].data = applyChannelFiltering(channel, rcStaging[channel]);
-            }
-        } else {
-            for (int channel = 0; channel < rxChannelCount; channel++) {
-                rcChannels[channel].data = rcStaging[channel];
-            }
+        for (int channel = 0; channel < rxChannelCount; channel++) {
+            rcChannels[channel].data = rcStaging[channel];
         }
     }
 
@@ -721,11 +639,6 @@ uint16_t getRSSI(void)
 rssiSource_e getRSSISource(void)
 {
     return activeRssiSource;
-}
-
-uint16_t rxGetRefreshRate(void)
-{
-    return rxRuntimeConfig.rxRefreshRate;
 }
 
 int16_t rxGetChannelValue(unsigned channelNumber)

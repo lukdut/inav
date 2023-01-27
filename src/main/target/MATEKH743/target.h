@@ -34,10 +34,9 @@
 #define USE_DUAL_GYRO
 #define USE_TARGET_IMU_HARDWARE_DESCRIPTORS
 
-#define USE_EXTI
-#define USE_MPU_DATA_READY_SIGNAL
 
-// *************** SPI1 IMU1 *************************
+
+// *************** SPI1 IMU0 MPU6000 ****************
 #define USE_SPI
 #define USE_SPI_DEVICE_1
 #define SPI1_SCK_PIN            PA5
@@ -46,12 +45,11 @@
 
 #define USE_IMU_MPU6000
 
-#define IMU1_ALIGN              CW0_DEG_FLIP
-#define IMU1_SPI_BUS            BUS_SPI1
-#define IMU1_CS_PIN             PC15
-#define IMU1_EXTI_PIN           PB2
+#define IMU_MPU6000_ALIGN       CW0_DEG_FLIP
+#define MPU6000_SPI_BUS          BUS_SPI1
+#define MPU6000_CS_PIN          PC15
 
-// *************** SPI4 IMU2 *************************
+// *************** SPI4 IMU1  ICM20602 **************
 #define USE_SPI_DEVICE_4
 #define SPI4_SCK_PIN            PE12
 #define SPI4_MISO_PIN           PE13
@@ -59,10 +57,16 @@
 
 #define USE_IMU_MPU6500
 
-#define IMU2_ALIGN              CW0_DEG_FLIP
-#define IMU2_SPI_BUS            BUS_SPI4
-#define IMU2_CS_PIN             PE11
-#define IMU2_EXTI_PIN           PE15
+#define IMU_MPU6500_ALIGN       CW0_DEG_FLIP
+#define MPU6500_SPI_BUS         BUS_SPI4
+#define MPU6500_CS_PIN          PE11
+
+// *************** SPI4 IMU2 ICM42605 **************
+#define USE_IMU_ICM42605
+
+#define IMU_ICM42605_ALIGN      CW90_DEG_FLIP
+#define ICM42605_SPI_BUS        BUS_SPI4
+#define ICM42605_CS_PIN         PC13
 
 // *************** SPI2 OSD ***********************
 #define USE_SPI_DEVICE_2
@@ -100,6 +104,7 @@
 #define USE_BARO_BMP280
 #define USE_BARO_MS5611
 #define USE_BARO_DPS310
+#define USE_BARO_SPL06
 
 #define USE_MAG
 #define MAG_I2C_BUS             BUS_I2C1
@@ -111,7 +116,6 @@
 #define USE_MAG_LIS3MDL
 
 #define TEMPERATURE_I2C_BUS     BUS_I2C2
-#define BNO055_I2C_BUS          BUS_I2C2
 #define PITOT_I2C_BUS           BUS_I2C2
 
 #define USE_RANGEFINDER
@@ -159,11 +163,12 @@
 #define SERIALRX_UART           SERIAL_PORT_USART6
 
 // *************** SDIO SD BLACKBOX*******************
-//#define USE_SDCARD
-//#define USE_SDCARD_SDIO
-//#define SDCARD_SDIO_DMA         DMA_TAG(2,3,4)
-//#define SDCARD_SDIO_4BIT
-//#define ENABLE_BLACKBOX_LOGGING_ON_SDCARD_BY_DEFAULT
+#define USE_SDCARD
+#define USE_SDCARD_SDIO
+#define SDCARD_SDIO_DEVICE      SDIODEV_1
+#define SDCARD_SDIO_4BIT
+
+#define ENABLE_BLACKBOX_LOGGING_ON_SDCARD_BY_DEFAULT
 
 // *************** ADC *****************************
 #define USE_ADC

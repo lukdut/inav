@@ -75,26 +75,15 @@ typedef enum {
 typedef enum {
     DEVHW_NONE = 0,
 
-    /* Dedicated ACC chips */
-    DEVHW_BMA280,
-    DEVHW_ADXL345,
-    DEVHW_MMA8452,
-    DEVHW_LSM303DLHC,
-
-    /* Dedicated GYRO chips */
-    DEVHW_L3GD20,
-    DEVHW_L3G4200,
-
     /* Combined ACC/GYRO chips */
-    DEVHW_MPU3050,
     DEVHW_MPU6000,
-    DEVHW_MPU6050,
     DEVHW_MPU6500,
     DEVHW_BMI160,
     DEVHW_BMI088_GYRO,
     DEVHW_BMI088_ACC,
     DEVHW_ICM20689,
     DEVHW_ICM42605,
+    DEVHW_BMI270,
 
     /* Combined ACC/GYRO/MAG chips */
     DEVHW_MPU9250,
@@ -108,6 +97,7 @@ typedef enum {
     DEVHW_SPL06,
     DEVHW_BMP388,
     DEVHW_DPS310,
+    DEVHW_B2SMPB,
 
     /* Compass chips */
     DEVHW_HMC5883,
@@ -121,6 +111,7 @@ typedef enum {
     DEVHW_LIS3MDL,
     DEVHW_RM3100,
     DEVHW_VCM5883,
+    DEVHW_MLX90393,
 
     /* Temp sensor chips */
     DEVHW_LM75_0,
@@ -140,20 +131,19 @@ typedef enum {
 
     /* Rangefinder modules */
     DEVHW_SRF10,
-    DEVHW_HCSR04_I2C,   // DIY-style adapter
     DEVHW_VL53L0X,
     DEVHW_VL53L1X,
     DEVHW_US42,
+    DEVHW_TOF10120_I2C,
 
     /* Other hardware */
     DEVHW_MS4525,       // Pitot meter
-    DEVHW_PCA9685,      // PWM output device
     DEVHW_M25P16,       // SPI NOR flash
+    DEVHW_W25N01G,      // SPI 128MB flash
     DEVHW_UG2864,       // I2C OLED display
     DEVHW_SDCARD,       // Generic SD-Card
     DEVHW_IRLOCK,       // IR-Lock visual positioning hardware
     DEVHW_PCF8574,      // 8-bit I/O expander
-    DEVHW_BNO055,       // BNO055 IMU
 } devHardwareType_e;
 
 typedef enum {

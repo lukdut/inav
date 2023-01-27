@@ -100,7 +100,7 @@ static uint8_t serialPortCount;
 const uint32_t baudRates[] = { 0, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 250000,
         460800, 921600, 1000000, 1500000, 2000000, 2470000 }; // see baudRate_e
 
-#define BAUD_RATE_COUNT (sizeof(baudRates) / sizeof(baudRates[0]))
+#define BAUD_RATE_COUNT ARRAYLEN(baudRates)
 
 PG_REGISTER_WITH_RESET_FN(serialConfig_t, serialConfig, PG_SERIAL_CONFIG, 1);
 
@@ -133,9 +133,9 @@ void pgResetFn_serialConfig(serialConfig_t *serialConfig)
 #endif
 
 #ifdef SMARTAUDIO_UART
-    serialPortConfig_t *gpsUartConfig = serialFindPortConfiguration(SMARTAUDIO_UART);
-    if (SMARTAUDIO_UART) {
-        gpsUartConfig->functionMask = FUNCTION_VTX_SMARTAUDIO;
+    serialPortConfig_t *smartAudioUartConfig = serialFindPortConfiguration(SMARTAUDIO_UART);
+    if (smartAudioUartConfig) {
+        smartAudioUartConfig->functionMask = FUNCTION_VTX_SMARTAUDIO;
     }
 #endif
 
@@ -441,7 +441,7 @@ void closeSerialPort(serialPort_t *serialPort)
     serialPortUsage->serialPort = NULL;
 }
 
-void serialInit(bool softserialEnabled, serialPortIdentifier_e serialPortToDisable)
+void serialInit(bool softserialEnabled)
 {
     uint8_t index;
 
@@ -451,12 +451,6 @@ void serialInit(bool softserialEnabled, serialPortIdentifier_e serialPortToDisab
     for (index = 0; index < SERIAL_PORT_COUNT; index++) {
         serialPortUsageList[index].identifier = serialPortIdentifiers[index];
 
-        if (serialPortToDisable != SERIAL_PORT_NONE) {
-            if (serialPortUsageList[index].identifier == serialPortToDisable) {
-                serialPortUsageList[index].identifier = SERIAL_PORT_NONE;
-                serialPortCount--;
-            }
-        }
         if (!softserialEnabled) {
             if (0
 #ifdef USE_SOFTSERIAL1

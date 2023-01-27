@@ -357,33 +357,34 @@ static void djiSerializeOSDConfigReply(sbuf_t *dst)
         const bool itemIsSupported = ((djiOSDItemIndexMap[i].depFeature == 0) || feature(djiOSDItemIndexMap[i].depFeature));
 
         if (inavOSDIdx >= 0 && itemIsSupported) {
-            // Position & visibility encoded in 16 bits. Position encoding is the same between BF/DJI and INAV
-            // However visibility is different. INAV has 3 layouts, while BF only has visibility profiles
-            // Here we use only one OSD layout mapped to first OSD BF profile
+            // Position & visibility are encoded in 16 bits, and is the same between BF/DJI.
+            // However INAV supports co-ords of 0-63 and has 3 layouts, while BF has co-ords 0-31 and visibility profiles.
+            // Re-encode for co-ords of 0-31 and map the layout to all three BF profiles.
             uint16_t itemPos = osdLayoutsConfig()->item_pos[0][inavOSDIdx];
+            uint16_t itemPosSD = OSD_POS_SD(OSD_X(itemPos), OSD_Y(itemPos));
 
             // Workarounds for certain OSD element positions
             // INAV calculates these dynamically, while DJI expects the config to have defined coordinates
             switch(inavOSDIdx) {
                 case OSD_CROSSHAIRS:
-                    itemPos = (itemPos & (~OSD_POS_MAX)) | OSD_POS(13, 6);
+                    itemPosSD = OSD_POS_SD(15, 8);
                     break;
 
                 case OSD_ARTIFICIAL_HORIZON:
-                    itemPos = (itemPos & (~OSD_POS_MAX)) | OSD_POS(14, 2);
+                    itemPosSD = OSD_POS_SD(9, 8);
                     break;
 
                 case OSD_HORIZON_SIDEBARS:
-                    itemPos = (itemPos & (~OSD_POS_MAX)) | OSD_POS(14, 5);
+                    itemPosSD = OSD_POS_SD(16, 7);
                     break;
             }
 
             // Enforce visibility in 3 BF OSD profiles
             if (OSD_VISIBLE(itemPos)) {
-                itemPos |= 0x3000;
+            	itemPosSD |= (0x3000 | OSD_VISIBLE_FLAG_SD);
             }
 
-            sbufWriteU16(dst, itemPos);
+            sbufWriteU16(dst, itemPosSD);
         }
         else {
             // Hide OSD elements unsupported by INAV
@@ -526,6 +527,8 @@ static char * osdArmingDisabledReasonMessage(void)
         case ARMING_DISABLED_DSHOT_BEEPER:
             return OSD_MESSAGE_STR("MOTOR BEEPER ACTIVE");
             // Cases without message
+        case ARMING_DISABLED_LANDING_DETECTED:
+            FALLTHROUGH;
         case ARMING_DISABLED_CMS_MENU:
             FALLTHROUGH;
         case ARMING_DISABLED_OSD_MENU:
@@ -533,6 +536,8 @@ static char * osdArmingDisabledReasonMessage(void)
         case ARMING_DISABLED_ALL_FLAGS:
             FALLTHROUGH;
         case ARMED:
+            FALLTHROUGH;
+        case SIMULATOR_MODE:
             FALLTHROUGH;
         case WAS_EVER_ARMED:
             break;
@@ -655,9 +660,11 @@ static int32_t osdConvertVelocityToUnit(int32_t vel)
         case OSD_UNIT_METRIC_MPH:
             FALLTHROUGH;
         case OSD_UNIT_IMPERIAL:
-            return (vel * 224) / 10000; // Convert to mph
+            return CMSEC_TO_CENTIMPH(vel) / 100; // Convert to mph
+        case OSD_UNIT_GA:
+            return CMSEC_TO_CENTIKNOTS(vel) / 100; // Convert to Knots
         case OSD_UNIT_METRIC:
-            return (vel * 36) / 1000;   // Convert to kmh
+            return CMSEC_TO_CENTIKPH(vel) / 100;   // Convert to kmh
     }
 
     // Unreachable
@@ -684,7 +691,7 @@ void osdDJIFormatVelocityStr(char* buff)
         case OSD_SPEED_SOURCE_AIR:
             strcpy(sourceBuf, "AIR");
 #ifdef USE_PITOT
-            vel = pitot.airSpeed;
+            vel = getAirspeedEstimate();
 #endif
             break;
     }
@@ -696,6 +703,9 @@ void osdDJIFormatVelocityStr(char* buff)
             FALLTHROUGH;
         case OSD_UNIT_IMPERIAL:
             tfp_sprintf(buff, "%s %3d MPH", sourceBuf, (int)osdConvertVelocityToUnit(vel));
+            break;
+        case OSD_UNIT_GA:
+            tfp_sprintf(buff, "%s %3d KT", sourceBuf, (int)osdConvertVelocityToUnit(vel));
             break;
         case OSD_UNIT_METRIC:
             tfp_sprintf(buff, "%s %3d KPH", sourceBuf, (int)osdConvertVelocityToUnit(vel));
@@ -733,6 +743,18 @@ static void osdDJIFormatDistanceStr(char *buff, int32_t dist)
                 // Show miles when dist >= 0.5mi
                 tfp_sprintf(buff, "%d.%02d%s", (int)(centifeet / (100*FEET_PER_MILE)),
                 (abs(centifeet) % (100 * FEET_PER_MILE)) / FEET_PER_MILE, "Mi");
+            }
+            break;
+        case OSD_UNIT_GA:
+            centifeet = CENTIMETERS_TO_CENTIFEET(dist);
+            if (abs(centifeet) < FEET_PER_NAUTICALMILE * 100 / 2) {
+                // Show feet when dist < 0.5mi
+                tfp_sprintf(buff, "%d%s", (int)(centifeet / 100), "FT");
+            }
+            else {
+                // Show miles when dist >= 0.5mi
+                tfp_sprintf(buff, "%d.%02d%s", (int)(centifeet / (100 * FEET_PER_NAUTICALMILE)),
+                (int)((abs(centifeet) % (int)(100 * FEET_PER_NAUTICALMILE)) / FEET_PER_NAUTICALMILE), "NM");
             }
             break;
         case OSD_UNIT_METRIC_MPH:
@@ -931,7 +953,7 @@ static void osdDJIAdjustmentMessage(char *buff, uint8_t adjustmentFunction)
             tfp_sprintf(buff, "VZD %3d", pidBankMutable()->pid[PID_VEL_Z].D);
             break;
         case ADJUSTMENT_FW_MIN_THROTTLE_DOWN_PITCH_ANGLE:
-            tfp_sprintf(buff, "MTDPA %4d", currentBatteryProfileMutable->fwMinThrottleDownPitchAngle);
+            tfp_sprintf(buff, "MTDPA %4d", navConfigMutable()->fw.minThrottleDownPitchAngle);
             break;
         case ADJUSTMENT_TPA:
             tfp_sprintf(buff, "TPA %3d", currentControlRateProfile->throttle.dynPID);
@@ -942,6 +964,11 @@ static void osdDJIAdjustmentMessage(char *buff, uint8_t adjustmentFunction)
         case ADJUSTMENT_NAV_FW_CONTROL_SMOOTHNESS:
             tfp_sprintf(buff, "CSM %3d", navConfigMutable()->fw.control_smoothness);
             break;
+#ifdef USE_MULTI_MISSION
+        case ADJUSTMENT_NAV_WP_MULTI_MISSION_INDEX:
+            tfp_sprintf(buff, "WPI %3d", navConfigMutable()->general.waypoint_multi_mission_index);
+            break;
+#endif
         default:
             tfp_sprintf(buff, "UNSUPPORTED");
             break;
@@ -1034,7 +1061,7 @@ static bool djiFormatMessages(char *buff)
         // Pick one of the available messages. Each message lasts
         // a second.
         if (messageCount > 0) {
-           strcpy(buff, messages[OSD_ALTERNATING_CHOICES(DJI_ALTERNATING_DURATION_SHORT, messageCount)]);;
+           strcpy(buff, messages[OSD_ALTERNATING_CHOICES(DJI_ALTERNATING_DURATION_SHORT, messageCount)]);
            haveMessage = true;
         }
     } else if (ARMING_FLAG(ARMING_DISABLED_ALL_FLAGS)) {
@@ -1165,7 +1192,7 @@ static mspResult_e djiProcessMspCommand(mspPacket_t *cmd, mspPacket_t *reply, ms
                     djiSerializeCraftNameOverride(dst);
                 } else {
 #endif
-                    sbufWriteData(dst, systemConfig()->name, MAX((int)strlen(systemConfig()->name), OSD_MESSAGE_LENGTH));
+                    sbufWriteData(dst, systemConfig()->craftName, (int)strlen(systemConfig()->craftName));
 #if defined(USE_OSD)
                 }
 #endif
@@ -1411,8 +1438,8 @@ static mspResult_e djiProcessMspCommand(mspPacket_t *cmd, mspPacket_t *reply, ms
             sbufWriteU8(dst, gyroConfig()->gyro_main_lpf_hz);           // BF: gyroConfig()->gyro_lowpass_hz
             sbufWriteU16(dst, pidProfile()->dterm_lpf_hz);              // BF: currentPidProfile->dterm_lowpass_hz
             sbufWriteU16(dst, pidProfile()->yaw_lpf_hz);                // BF: currentPidProfile->yaw_lowpass_hz
-            sbufWriteU16(dst, gyroConfig()->gyro_notch_hz);             // BF: gyroConfig()->gyro_soft_notch_hz_1
-            sbufWriteU16(dst, gyroConfig()->gyro_notch_cutoff);         // BF: gyroConfig()->gyro_soft_notch_cutoff_1
+            sbufWriteU16(dst, 0);                                       // BF: gyroConfig()->gyro_soft_notch_hz_1
+            sbufWriteU16(dst, 1);                                       // BF: gyroConfig()->gyro_soft_notch_cutoff_1
             sbufWriteU16(dst, 0);                                       // BF: currentPidProfile->dterm_notch_hz
             sbufWriteU16(dst, 1);                                       // BF: currentPidProfile->dterm_notch_cutoff
             sbufWriteU16(dst, 0);                                       // BF: gyroConfig()->gyro_soft_notch_hz_2
@@ -1458,10 +1485,6 @@ static mspResult_e djiProcessMspCommand(mspPacket_t *cmd, mspPacket_t *reply, ms
                     pidBankMutable()->pid[djiPidIndexMap[i]].D = sbufReadU8(src);
                 }
                 schedulePidGainsUpdate();
-#if defined(USE_NAV)
-                // This is currently unnecessary, DJI HD doesn't set any NAV PIDs
-                //navigationUsePIDs();
-#endif
             }
             else {
                 reply->result = MSP_RESULT_ERROR;

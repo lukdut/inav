@@ -83,24 +83,15 @@ PG_RESET_TEMPLATE(reversibleMotorsConfig_t, reversibleMotorsConfig,
     .neutral = SETTING_3D_NEUTRAL_DEFAULT
 );
 
-PG_REGISTER_WITH_RESET_TEMPLATE(mixerConfig_t, mixerConfig, PG_MIXER_CONFIG, 4);
+PG_REGISTER_WITH_RESET_TEMPLATE(mixerConfig_t, mixerConfig, PG_MIXER_CONFIG, 5);
 
 PG_RESET_TEMPLATE(mixerConfig_t, mixerConfig,
     .motorDirectionInverted = SETTING_MOTOR_DIRECTION_INVERTED_DEFAULT,
     .platformType = SETTING_PLATFORM_TYPE_DEFAULT,
     .hasFlaps = SETTING_HAS_FLAPS_DEFAULT,
     .appliedMixerPreset = SETTING_MODEL_PREVIEW_TYPE_DEFAULT, //This flag is not available in CLI and used by Configurator only
+    .outputMode = SETTING_OUTPUT_MODE_DEFAULT,
 );
-
-#ifdef BRUSHED_MOTORS
-#define DEFAULT_PWM_PROTOCOL    PWM_TYPE_BRUSHED
-#define DEFAULT_PWM_RATE        16000
-#else
-#define DEFAULT_PWM_PROTOCOL    PWM_TYPE_ONESHOT125
-#define DEFAULT_PWM_RATE        400
-#endif
-
-#define DEFAULT_MAX_THROTTLE    1850
 
 PG_REGISTER_WITH_RESET_TEMPLATE(motorConfig_t, motorConfig, PG_MOTOR_CONFIG, 9);
 
@@ -292,8 +283,8 @@ static void applyTurtleModeToMotors(void) {
         float signRoll = rcCommand[ROLL] < 0 ? 1 : -1;
         float signYaw = (float)((rcCommand[YAW] < 0 ? 1 : -1) * (mixerConfig()->motorDirectionInverted ? 1 : -1));
 
-        float stickDeflectionLength = fast_fsqrtf(sq(stickDeflectionPitchAbs) + sq(stickDeflectionRollAbs));
-        float stickDeflectionExpoLength = fast_fsqrtf(sq(stickDeflectionPitchExpo) + sq(stickDeflectionRollExpo));
+        float stickDeflectionLength = calc_length_pythagorean_2D(stickDeflectionPitchAbs, stickDeflectionRollAbs);
+        float stickDeflectionExpoLength = calc_length_pythagorean_2D(stickDeflectionPitchExpo, stickDeflectionRollExpo);
 
         if (stickDeflectionYawAbs > MAX(stickDeflectionPitchAbs, stickDeflectionRollAbs)) {
             // If yaw is the dominant, disable pitch and roll
@@ -540,6 +531,17 @@ void FAST_CODE mixTable()
 
         motorValueWhenStopped = getReversibleMotorsThrottleDeadband();
         mixerThrottleCommand = constrain(rcCommand[THROTTLE], throttleRangeMin, throttleRangeMax);
+
+#ifdef USE_DSHOT
+        if(isMotorProtocolDigital() && feature(FEATURE_REVERSIBLE_MOTORS) && reversibleMotorsThrottleState == MOTOR_DIRECTION_BACKWARD) {
+            /*
+             * We need to start the throttle output from stick input to start in the middle of the stick at the low and.
+             * Without this, it's starting at the high side.
+             */
+            int throttleDistanceToMax = throttleRangeMax - rcCommand[THROTTLE];
+            mixerThrottleCommand = throttleRangeMin + throttleDistanceToMax;
+        }
+#endif
     } else {
         mixerThrottleCommand = rcCommand[THROTTLE];
         throttleRangeMin = throttleIdleValue;
@@ -594,6 +596,11 @@ void FAST_CODE mixTable()
             if (currentMotorStatus != MOTOR_RUNNING) {
                 motor[i] = motorValueWhenStopped;
             }
+#ifdef USE_DEV_TOOLS
+            if (systemConfig()->groundTestMode) {
+                motor[i] = motorZeroCommand;
+            }
+#endif
         }
     } else {
         for (int i = 0; i < motorCount; i++) {
@@ -619,11 +626,8 @@ motorStatus_e getMotorStatus(void)
     }
 
     const bool fixedWingOrAirmodeNotActive = STATE(FIXED_WING_LEGACY) || !STATE(AIRMODE_ACTIVE);
-    const bool throttleStickLow =
-        (calculateThrottleStatus(feature(FEATURE_REVERSIBLE_MOTORS) ? THROTTLE_STATUS_TYPE_COMMAND : THROTTLE_STATUS_TYPE_RC) == THROTTLE_LOW);
 
-    if (throttleStickLow && fixedWingOrAirmodeNotActive) {
-
+    if (throttleStickIsLow() && fixedWingOrAirmodeNotActive) {
         if ((navConfig()->general.flags.nav_overrides_motor_stop == NOMS_OFF_ALWAYS) && failsafeIsActive()) {
             // If we are in failsafe and user was holding stick low before it was triggered and nav_overrides_motor_stop is set to OFF_ALWAYS
             // and either on a plane or on a quad with inactive airmode - stop motor
@@ -645,7 +649,6 @@ motorStatus_e getMotorStatus(void)
                     return MOTOR_STOPPED_USER;
             }
         }
-
     }
 
     return MOTOR_RUNNING;

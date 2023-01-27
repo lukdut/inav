@@ -19,10 +19,10 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "common/axis.h"
 #include "common/time.h"
 #include "config/parameter_group.h"
 #include "drivers/adc.h"
-#include "drivers/rx_pwm.h"
 #include "fc/stats.h"
 
 #define MAX_PROFILE_COUNT 3
@@ -30,7 +30,8 @@
 #define MAX_NAME_LENGTH 16
 
 #define TASK_GYRO_LOOPTIME 250 // Task gyro always runs at 4kHz
- typedef enum {
+
+typedef enum {
     FEATURE_THR_VBAT_COMP = 1 << 0,
     FEATURE_VBAT = 1 << 1,
     FEATURE_TX_PROF_SEL = 1 << 2,       // Profile selection by TX stick command
@@ -69,6 +70,9 @@ typedef struct systemConfig_s {
     uint8_t current_profile_index;
     uint8_t current_battery_profile_index;
     uint8_t debug_mode;
+#ifdef USE_DEV_TOOLS
+    bool groundTestMode;                    // Disables motor ouput, sets heading trusted on FW (for dev use)
+#endif
 #ifdef USE_I2C
     uint8_t i2c_speed;
 #endif
@@ -76,7 +80,8 @@ typedef struct systemConfig_s {
     uint8_t cpuUnderclock;
 #endif
     uint8_t throttle_tilt_compensation_strength;    // the correction that will be applied at throttle_correction_angle.
-    char name[MAX_NAME_LENGTH + 1];
+    char craftName[MAX_NAME_LENGTH + 1];
+    char pilotName[MAX_NAME_LENGTH + 1];
 } systemConfig_t;
 
 PG_DECLARE(systemConfig_t, systemConfig);
@@ -118,7 +123,9 @@ void resetEEPROM(void);
 void readEEPROM(void);
 void writeEEPROM(void);
 void ensureEEPROMContainsValidData(void);
+void processDelayedSave(void);
 
+void saveConfig(void);
 void saveConfigAndNotify(void);
 void validateAndFixConfig(void);
 void validateAndFixTargetConfig(void);
@@ -130,6 +137,9 @@ void setConfigProfileAndWriteEEPROM(uint8_t profileIndex);
 uint8_t getConfigBatteryProfile(void);
 bool setConfigBatteryProfile(uint8_t profileIndex);
 void setConfigBatteryProfileAndWriteEEPROM(uint8_t profileIndex);
+
+void setGyroCalibration(int16_t getGyroZero[XYZ_AXIS_COUNT]);
+void setGravityCalibration(float getGravity);
 
 bool canSoftwareSerialBeUsed(void);
 void applyAndSaveBoardAlignmentDelta(int16_t roll, int16_t pitch);

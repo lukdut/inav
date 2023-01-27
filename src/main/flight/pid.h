@@ -132,8 +132,7 @@ typedef struct pidProfile_s {
     float       fixedWingCoordinatedPitchGain;    // This is the gain of the pitch rate to keep the pitch angle constant during coordinated turns.
     float       fixedWingItermLimitOnStickPosition;   //Do not allow Iterm to grow when stick position is above this point
     uint16_t    fixedWingYawItermBankFreeze;       // Freeze yaw Iterm when bank angle is more than this many degrees
-
-    uint8_t     loiter_direction;               // Direction of loitering center point on right wing (clockwise - as before), or center point on left wing (counterclockwise)
+    
     float       navVelXyDTermLpfHz;
     uint8_t navVelXyDtermAttenuation;       // VEL_XY dynamic Dterm scale: Dterm will be attenuatedby this value (in percent) when UAV is traveling with more than navVelXyDtermAttenuationStart percents of max velocity
     uint8_t navVelXyDtermAttenuationStart;  // VEL_XY dynamic Dterm scale: Dterm attenuation will begin at this percent of max velocity
@@ -189,7 +188,7 @@ const pidBank_t * pidBank(void);
 pidBank_t * pidBankMutable(void);
 
 extern int16_t axisPID[];
-extern int32_t axisPID_P[], axisPID_I[], axisPID_D[], axisPID_Setpoint[];
+extern int32_t axisPID_P[], axisPID_I[], axisPID_D[], axisPID_F[], axisPID_Setpoint[];
 
 void pidInit(void);
 bool pidInitFilters(void);

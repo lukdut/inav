@@ -115,6 +115,7 @@ Each LED has one base function:
 * `G` - `G`PS state.
 * `S` - R`S`SSI level.
 * `L` - Battery `L`evel.
+* `H` - C`H`annel.
 
 And each LED has overlays:
 
@@ -124,8 +125,9 @@ And each LED has overlays:
 * `B` - `B`link (flash twice) mode.
 * `O` - Lars`O`n Scanner (Cylon Effect).
 * `N` - Blink on la`N`ding (throttle < 50%).
+* `E` - Strob`E` Blink white on top of selected color.
 
-`cc` specifies the color number (0 based index).
+`cc` specifies the color number (0 based index), or Channel number to adjust Hue
 
 Example:
 
@@ -137,6 +139,7 @@ led 3 0,15:SD:AWI:0
 led 4 7,7::C:1
 led 5 8,8::C:2
 led 6 8,9::B:1
+led 7 8,10::H:6
 ```
 
 To erase an led, and to mark the end of the chain, use `0,0::` as the second argument, like this:

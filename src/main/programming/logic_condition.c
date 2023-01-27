@@ -34,6 +34,8 @@
 #include "common/utils.h"
 #include "rx/rx.h"
 #include "common/maths.h"
+#include "fc/config.h"
+#include "fc/cli.h"
 #include "fc/fc_core.h"
 #include "fc/rc_controls.h"
 #include "fc/runtime_config.h"
@@ -41,6 +43,7 @@
 #include "navigation/navigation.h"
 #include "sensors/battery.h"
 #include "sensors/pitotmeter.h"
+#include "sensors/rangefinder.h"
 #include "flight/imu.h"
 #include "flight/pid.h"
 #include "drivers/io_port_expander.h"
@@ -53,11 +56,12 @@
 #include "io/vtx.h"
 #include "drivers/vtx_common.h"
 
-PG_REGISTER_ARRAY_WITH_RESET_FN(logicCondition_t, MAX_LOGIC_CONDITIONS, logicConditions, PG_LOGIC_CONDITIONS, 2);
+PG_REGISTER_ARRAY_WITH_RESET_FN(logicCondition_t, MAX_LOGIC_CONDITIONS, logicConditions, PG_LOGIC_CONDITIONS, 4);
 
 EXTENDED_FASTRAM uint64_t logicConditionsGlobalFlags;
 EXTENDED_FASTRAM int logicConditionValuesByType[LOGIC_CONDITION_LAST];
 EXTENDED_FASTRAM rcChannelOverride_t rcChannelOverrides[MAX_SUPPORTED_RC_CHANNEL_COUNT];
+EXTENDED_FASTRAM flightAxisOverride_t flightAxisOverride[XYZ_AXIS_COUNT];
 
 void pgResetFn_logicConditions(logicCondition_t *instance)
 {
@@ -82,10 +86,11 @@ void pgResetFn_logicConditions(logicCondition_t *instance)
 logicConditionState_t logicConditionStates[MAX_LOGIC_CONDITIONS];
 
 static int logicConditionCompute(
-    int currentVaue,
+    int32_t currentValue,
     logicOperation_e operation,
-    int operandA,
-    int operandB
+    int32_t operandA,
+    int32_t operandB,
+    uint8_t lcIndex
 ) {
     int temporaryValue;
     vtxDeviceCapability_t vtxDeviceCapability;
@@ -98,6 +103,13 @@ static int logicConditionCompute(
 
         case LOGIC_CONDITION_EQUAL:
             return operandA == operandB;
+            break;
+
+        case LOGIC_CONDITION_APPROX_EQUAL:
+            {
+                uint16_t offest = operandA / 100;
+                return ((operandB >= (operandA - offest)) && (operandB <= (operandA + offest)));
+            }
             break;
 
         case LOGIC_CONDITION_GREATER_THAN:
@@ -155,7 +167,67 @@ static int logicConditionCompute(
             }
 
             //When both operands are not met, keep current value 
-            return currentVaue;
+            return currentValue;
+            break;
+
+        case LOGIC_CONDITION_EDGE:
+            if (operandA && logicConditionStates[lcIndex].timeout == 0 && !(logicConditionStates[lcIndex].flags & LOGIC_CONDITION_FLAG_TIMEOUT_SATISFIED)) {
+                if (operandB < 100) {
+                    logicConditionStates[lcIndex].timeout = millis();
+                } else {
+                    logicConditionStates[lcIndex].timeout = millis() + operandB;
+                }
+                logicConditionStates[lcIndex].flags |= LOGIC_CONDITION_FLAG_TIMEOUT_SATISFIED;
+                return true;
+            } else if (logicConditionStates[lcIndex].timeout > 0) {
+                if (logicConditionStates[lcIndex].timeout < millis()) {
+                    logicConditionStates[lcIndex].timeout = 0;
+                } else {
+                    return true;
+                }
+            }
+
+            if (!operandA) {
+                logicConditionStates[lcIndex].flags &= ~LOGIC_CONDITION_FLAG_TIMEOUT_SATISFIED;
+            }
+            return false;
+            break;
+
+        case LOGIC_CONDITION_DELAY:
+            if (operandA) {
+                if (logicConditionStates[lcIndex].timeout == 0) {
+                    logicConditionStates[lcIndex].timeout = millis() + operandB;
+                } else if (millis() > logicConditionStates[lcIndex].timeout ) {
+                    logicConditionStates[lcIndex].flags |= LOGIC_CONDITION_FLAG_TIMEOUT_SATISFIED;
+                    return true;
+                } else if (logicConditionStates[lcIndex].flags & LOGIC_CONDITION_FLAG_TIMEOUT_SATISFIED) {
+                    return true;
+                }
+            } else {
+                logicConditionStates[lcIndex].timeout = 0;
+                logicConditionStates[lcIndex].flags &= ~LOGIC_CONDITION_FLAG_TIMEOUT_SATISFIED;
+            }
+
+            return false;
+            break;
+
+        case LOGIC_CONDITION_TIMER:
+            if ((logicConditionStates[lcIndex].timeout == 0) || (millis() > logicConditionStates[lcIndex].timeout && !currentValue)) {
+                logicConditionStates[lcIndex].timeout = millis() + operandA;
+                return true;
+            } else if (millis() > logicConditionStates[lcIndex].timeout && currentValue) {
+                logicConditionStates[lcIndex].timeout = millis() + operandB;
+                return false;
+            }
+            return currentValue;
+            break;
+
+        case LOGIC_CONDITION_DELTA:
+            {
+                int difference = logicConditionStates[lcIndex].lastValue - operandA;
+                logicConditionStates[lcIndex].lastValue = operandA;
+                return ABS(difference) >= operandB;
+            }
             break;
 
         case LOGIC_CONDITION_GVAR_SET:
@@ -176,20 +248,20 @@ static int logicConditionCompute(
             break;
 
         case LOGIC_CONDITION_ADD:
-            return constrain(operandA + operandB, INT16_MIN, INT16_MAX);
+            return constrain(operandA + operandB, INT32_MIN, INT32_MAX);
             break;
 
         case LOGIC_CONDITION_SUB:
-            return constrain(operandA - operandB, INT16_MIN, INT16_MAX);
+            return constrain(operandA - operandB, INT32_MIN, INT32_MAX);
             break;
 
         case LOGIC_CONDITION_MUL:
-            return constrain(operandA * operandB, INT16_MIN, INT16_MAX);
+            return constrain(operandA * operandB, INT32_MIN, INT32_MAX);
             break;
 
         case LOGIC_CONDITION_DIV:
             if (operandB != 0) {
-                return constrain(operandA / operandB, INT16_MIN, INT16_MAX);
+                return constrain(operandA / operandB, INT32_MIN, INT32_MAX);
             } else {
                 return operandA;
             }
@@ -302,6 +374,14 @@ static int logicConditionCompute(
             temporaryValue = (operandB == 0) ? 500 : operandB;
             return tan_approx(DEGREES_TO_RADIANS(operandA)) * temporaryValue; 
         break;
+
+        case LOGIC_CONDITION_MIN:
+            return (operandA < operandB) ? operandA : operandB;
+        break;
+
+        case LOGIC_CONDITION_MAX:
+            return (operandA > operandB) ? operandA : operandB;
+        break;
     
         case LOGIC_CONDITION_MAP_INPUT:
             return scaleRange(constrain(operandA, 0, operandB), 0, operandB, 0, 1000);
@@ -327,12 +407,69 @@ static int logicConditionCompute(
 
         case LOGIC_CONDITION_MODULUS:
             if (operandB != 0) {
-                return constrain(operandA % operandB, INT16_MIN, INT16_MAX);
+                return constrain(operandA % operandB, INT32_MIN, INT32_MAX);
             } else {
                 return operandA;
             }
             break;
 
+        case LOGIC_CONDITION_SET_PROFILE:
+            operandA--;
+            if ( getConfigProfile() != operandA  && (operandA >= 0 && operandA < MAX_PROFILE_COUNT)) {
+                bool profileChanged = false;
+                if (setConfigProfile(operandA)) {
+                    pidInit();
+                    pidInitFilters();
+                    schedulePidGainsUpdate();
+                    profileChanged = true;
+                }
+                return profileChanged;
+            } else {
+                return false;
+            }
+            break;
+
+        case LOGIC_CONDITION_LOITER_OVERRIDE:
+            logicConditionValuesByType[LOGIC_CONDITION_LOITER_OVERRIDE] = constrain(operandA, 0, 100000);
+            LOGIC_CONDITION_GLOBAL_FLAG_ENABLE(LOGIC_CONDITION_GLOBAL_FLAG_OVERRIDE_LOITER_RADIUS);
+            return true;
+            break;
+
+        case LOGIC_CONDITION_FLIGHT_AXIS_ANGLE_OVERRIDE:
+            if (operandA >= 0 && operandA <= 2) {
+
+                flightAxisOverride[operandA].angleTargetActive = true;
+                int target = DEGREES_TO_DECIDEGREES(operandB);
+                if (operandA == 0) {
+                    //ROLL
+                    target = constrain(target, -pidProfile()->max_angle_inclination[FD_ROLL], pidProfile()->max_angle_inclination[FD_ROLL]);
+                } else if (operandA == 1) {
+                    //PITCH
+                    target = constrain(target, -pidProfile()->max_angle_inclination[FD_PITCH], pidProfile()->max_angle_inclination[FD_PITCH]);
+                } else if (operandA == 2) {
+                    //YAW
+                    target = (constrain(target, 0, 3600));
+                }
+                flightAxisOverride[operandA].angleTarget = target;
+                LOGIC_CONDITION_GLOBAL_FLAG_ENABLE(LOGIC_CONDITION_GLOBAL_FLAG_OVERRIDE_FLIGHT_AXIS);
+
+                return true;
+            } else {
+                return false;
+            }
+            break;
+
+        case LOGIC_CONDITION_FLIGHT_AXIS_RATE_OVERRIDE:
+            if (operandA >= 0 && operandA <= 2) {
+                flightAxisOverride[operandA].rateTargetActive = true;
+                flightAxisOverride[operandA].rateTarget = constrain(operandB, -2000, 2000);
+                LOGIC_CONDITION_GLOBAL_FLAG_ENABLE(LOGIC_CONDITION_GLOBAL_FLAG_OVERRIDE_FLIGHT_AXIS);
+                return true;
+            } else {
+                return false;
+            }
+            break;    
+        
         default:
             return false;
             break; 
@@ -343,7 +480,7 @@ void logicConditionProcess(uint8_t i) {
 
     const int activatorValue = logicConditionGetValue(logicConditions(i)->activatorId);
 
-    if (logicConditions(i)->enabled && activatorValue) {
+    if (logicConditions(i)->enabled && activatorValue && !cliMode) {
         
         /*
          * Process condition only when latch flag is not set
@@ -356,7 +493,8 @@ void logicConditionProcess(uint8_t i) {
                 logicConditionStates[i].value, 
                 logicConditions(i)->operation, 
                 operandAValue, 
-                operandBValue
+                operandBValue,
+                i
             );
         
             logicConditionStates[i].value = newValue;
@@ -370,6 +508,105 @@ void logicConditionProcess(uint8_t i) {
         }
     } else {
         logicConditionStates[i].value = false;
+    }
+}
+
+static int logicConditionGetWaypointOperandValue(int operand) {
+
+    switch (operand) {
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_IS_WP: // 0/1
+            return (navGetCurrentStateFlags() & NAV_AUTO_WP) ? 1 : 0;
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_WAYPOINT_INDEX:
+            return NAV_Status.activeWpNumber;
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_WAYPOINT_ACTION:
+            return NAV_Status.activeWpAction;
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_NEXT_WAYPOINT_ACTION:
+            {
+                uint8_t wpIndex = posControl.activeWaypointIndex + 1;
+                if ((wpIndex > 0) && (wpIndex < NAV_MAX_WAYPOINTS)) {
+                    return posControl.waypointList[wpIndex].action;
+                }
+                return false;
+            }
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_WAYPOINT_DISTANCE:
+            {
+                uint32_t distance = 0;
+                if (navGetCurrentStateFlags() & NAV_AUTO_WP) {
+                    fpVector3_t poi;
+                    gpsLocation_t wp;
+                    wp.lat = posControl.waypointList[NAV_Status.activeWpIndex].lat;
+                    wp.lon = posControl.waypointList[NAV_Status.activeWpIndex].lon;
+                    wp.alt = posControl.waypointList[NAV_Status.activeWpIndex].alt;
+                    geoConvertGeodeticToLocal(&poi, &posControl.gpsOrigin, &wp, GEO_ALT_RELATIVE);
+
+                    distance = calculateDistanceToDestination(&poi) / 100;
+                }
+
+                return distance;
+            }
+            break;
+
+        case LOGIC_CONDTIION_OPERAND_WAYPOINTS_DISTANCE_FROM_WAYPOINT:
+            {
+                uint32_t distance = 0;
+                if ((navGetCurrentStateFlags() & NAV_AUTO_WP) && NAV_Status.activeWpIndex > 0) {
+                    fpVector3_t poi;
+                    gpsLocation_t wp;
+                    wp.lat = posControl.waypointList[NAV_Status.activeWpIndex-1].lat;
+                    wp.lon = posControl.waypointList[NAV_Status.activeWpIndex-1].lon;
+                    wp.alt = posControl.waypointList[NAV_Status.activeWpIndex-1].alt;
+                    geoConvertGeodeticToLocal(&poi, &posControl.gpsOrigin, &wp, GEO_ALT_RELATIVE);
+
+                    distance = calculateDistanceToDestination(&poi) / 100;
+                }
+
+                return distance;
+            }
+            break;
+        
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_USER1_ACTION:
+            return (NAV_Status.activeWpIndex > 0) ? ((posControl.waypointList[NAV_Status.activeWpIndex-1].p3 & NAV_WP_USER1) == NAV_WP_USER1) : 0;
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_USER2_ACTION:
+            return (NAV_Status.activeWpIndex > 0) ? ((posControl.waypointList[NAV_Status.activeWpIndex-1].p3 & NAV_WP_USER2) == NAV_WP_USER2) : 0;
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_USER3_ACTION:
+            return (NAV_Status.activeWpIndex > 0) ? ((posControl.waypointList[NAV_Status.activeWpIndex-1].p3 & NAV_WP_USER3) == NAV_WP_USER3) : 0;
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_USER4_ACTION:
+            return (NAV_Status.activeWpIndex > 0) ? ((posControl.waypointList[NAV_Status.activeWpIndex-1].p3 & NAV_WP_USER4) == NAV_WP_USER4) : 0;
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_USER1_ACTION_NEXT_WP:
+            return ((posControl.waypointList[NAV_Status.activeWpIndex].p3 & NAV_WP_USER1) == NAV_WP_USER1);
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_USER2_ACTION_NEXT_WP:
+            return ((posControl.waypointList[NAV_Status.activeWpIndex].p3 & NAV_WP_USER2) == NAV_WP_USER2);
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_USER3_ACTION_NEXT_WP:
+            return ((posControl.waypointList[NAV_Status.activeWpIndex].p3 & NAV_WP_USER3) == NAV_WP_USER3);
+            break;
+
+        case LOGIC_CONDITION_OPERAND_WAYPOINTS_USER4_ACTION_NEXT_WP:
+            return ((posControl.waypointList[NAV_Status.activeWpIndex].p3 & NAV_WP_USER4) == NAV_WP_USER4);
+            break;
+
+        default:
+            return 0;
+            break;
     }
 }
 
@@ -400,6 +637,11 @@ static int logicConditionGetFlightOperandValue(int operand) {
         case LOGIC_CONDITION_OPERAND_FLIGHT_CELL_VOLTAGE: // V / 10
             return getBatteryAverageCellVoltage();
             break;
+
+        case LOGIC_CONDITION_OPERAND_FLIGHT_BATT_CELLS:
+            return getBatteryCellCount();
+            break;
+
         case LOGIC_CONDITION_OPERAND_FLIGHT_CURRENT: // Amp / 100
             return getAmperage();
             break;
@@ -431,7 +673,7 @@ static int logicConditionGetFlightOperandValue(int operand) {
 
         case LOGIC_CONDITION_OPERAND_FLIGHT_AIR_SPEED: // cm/s
         #ifdef USE_PITOT
-            return constrain(pitot.airSpeed, 0, INT16_MAX);
+            return constrain(getAirspeedEstimate(), 0, INT16_MAX);
         #else
             return false;
         #endif
@@ -481,10 +723,6 @@ static int logicConditionGetFlightOperandValue(int operand) {
             return (navGetCurrentStateFlags() & NAV_AUTO_RTH) ? 1 : 0;
             break; 
 
-        case LOGIC_CONDITION_OPERAND_FLIGHT_IS_WP: // 0/1
-            return (navGetCurrentStateFlags() & NAV_AUTO_WP) ? 1 : 0;
-            break; 
-
         case LOGIC_CONDITION_OPERAND_FLIGHT_IS_LANDING: // 0/1
             return (navGetCurrentStateFlags() & NAV_CTL_LAND) ? 1 : 0;
             break;
@@ -505,16 +743,8 @@ static int logicConditionGetFlightOperandValue(int operand) {
             return axisPID[PITCH];
             break;
 
-        case LOGIC_CONDITION_OPERAND_FLIGHT_WAYPOINT_INDEX:
-            return NAV_Status.activeWpNumber;
-            break;
-
-        case LOGIC_CONDITION_OPERAND_FLIGHT_WAYPOINT_ACTION:
-            return NAV_Status.activeWpAction;
-            break;
-
         case LOGIC_CONDITION_OPERAND_FLIGHT_3D_HOME_DISTANCE: //in m
-            return constrain(fast_fsqrtf(sq(GPS_distanceToHome) + sq(getEstimatedActualPosition(Z)/100)), 0, INT16_MAX);
+            return constrain(calc_length_pythagorean_2D(GPS_distanceToHome, getEstimatedActualPosition(Z) / 100.0f), 0, INT16_MAX);
             break;
 
         case LOGIC_CONDITION_OPERAND_FLIGHT_CRSF_LQ:
@@ -532,6 +762,25 @@ static int logicConditionGetFlightOperandValue(int operand) {
             return 0;
         #endif
             break;
+
+        case LOGIC_CONDITION_OPERAND_FLIGHT_ACTIVE_PROFILE: // int
+            return getConfigProfile() + 1;
+            break;
+
+        case LOGIC_CONDITION_OPERAND_FLIGHT_LOITER_RADIUS:
+            return getLoiterRadius(navConfig()->fw.loiter_radius);
+
+        case LOGIC_CONDITION_OPERAND_FLIGHT_AGL_STATUS:
+            return isEstimatedAglTrusted();
+            break;
+    
+        case LOGIC_CONDITION_OPERAND_FLIGHT_AGL:
+            return getEstimatedAglPosition();
+            break;    
+        
+        case LOGIC_CONDITION_OPERAND_FLIGHT_RANGEFINDER_RAW:
+            return rangefinderGetLatestRawAltitude();
+            break; 
 
         default:
             return 0;
@@ -591,6 +840,14 @@ static int logicConditionGetFlightModeOperandValue(int operand) {
             return IS_RC_MODE_ACTIVE(BOXUSER2);
             break;
 
+        case LOGIC_CONDITION_OPERAND_FLIGHT_MODE_USER3:
+            return IS_RC_MODE_ACTIVE(BOXUSER3);
+            break;
+
+        case LOGIC_CONDITION_OPERAND_FLIGHT_MODE_USER4:
+            return IS_RC_MODE_ACTIVE(BOXUSER4);
+            break;
+
         default:
             return 0;
             break;
@@ -608,7 +865,7 @@ int logicConditionGetOperandValue(logicOperandType_e type, int operand) {
 
         case LOGIC_CONDITION_OPERAND_TYPE_RC_CHANNEL:
             //Extract RC channel raw value
-            if (operand >= 1 && operand <= 16) {
+            if (operand >= 1 && operand <= MAX_SUPPORTED_RC_CHANNEL_COUNT) {
                 retVal = rxGetChannelValue(operand - 1);
             } 
             break;
@@ -637,6 +894,10 @@ int logicConditionGetOperandValue(logicOperandType_e type, int operand) {
             if (operand >= 0 && operand < MAX_PROGRAMMING_PID_COUNT) {
                 retVal = programmingPidGetOutput(operand);
             }
+            break;
+        
+        case LOGIC_CONDITION_OPERAND_TYPE_WAYPOINTS:
+            retVal = logicConditionGetWaypointOperandValue(operand);
             break;
 
         default:
@@ -667,6 +928,11 @@ void logicConditionUpdateTask(timeUs_t currentTimeUs) {
         rcChannelOverrides[i].active = false;
     }
 
+    for (uint8_t i = 0; i < XYZ_AXIS_COUNT; i++) {
+        flightAxisOverride[i].rateTargetActive = false;
+        flightAxisOverride[i].angleTargetActive = false;
+    }
+
     for (uint8_t i = 0; i < MAX_LOGIC_CONDITIONS; i++) {
         logicConditionProcess(i);
     }
@@ -679,7 +945,9 @@ void logicConditionUpdateTask(timeUs_t currentTimeUs) {
 void logicConditionReset(void) {
     for (uint8_t i = 0; i < MAX_LOGIC_CONDITIONS; i++) {
         logicConditionStates[i].value = 0;
+        logicConditionStates[i].lastValue = 0;
         logicConditionStates[i].flags = 0;
+        logicConditionStates[i].timeout = 0;
     }
 }
 
@@ -718,5 +986,50 @@ int16_t getRcChannelOverride(uint8_t channel, int16_t originalValue) {
         return rcChannelOverrides[channel].value;
     } else {
         return originalValue;
+    }
+}
+
+uint32_t getLoiterRadius(uint32_t loiterRadius) {
+#ifdef USE_PROGRAMMING_FRAMEWORK
+    if (LOGIC_CONDITION_GLOBAL_FLAG(LOGIC_CONDITION_GLOBAL_FLAG_OVERRIDE_LOITER_RADIUS) && 
+        !(FLIGHT_MODE(FAILSAFE_MODE) || FLIGHT_MODE(NAV_RTH_MODE) || FLIGHT_MODE(NAV_WP_MODE) || navigationIsExecutingAnEmergencyLanding())) {
+        return constrain(logicConditionValuesByType[LOGIC_CONDITION_LOITER_OVERRIDE], loiterRadius, 100000);
+    } else {
+        return loiterRadius;
+    }
+#else
+    return loiterRadius;
+#endif
+}
+
+float getFlightAxisAngleOverride(uint8_t axis, float angle) {
+    if (flightAxisOverride[axis].angleTargetActive) {
+        return flightAxisOverride[axis].angleTarget;
+    } else {
+        return angle;
+    }
+}
+
+float getFlightAxisRateOverride(uint8_t axis, float rate) {
+    if (flightAxisOverride[axis].rateTargetActive) {
+        return flightAxisOverride[axis].rateTarget;
+    } else {
+        return rate;
+    }
+}
+
+bool isFlightAxisAngleOverrideActive(uint8_t axis) {
+    if (flightAxisOverride[axis].angleTargetActive) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+bool isFlightAxisRateOverrideActive(uint8_t axis) {
+    if (flightAxisOverride[axis].rateTargetActive) {
+        return true;
+    } else {
+        return false;
     }
 }

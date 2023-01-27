@@ -59,7 +59,7 @@ typedef struct osd_sidebar_s {
 void osdGridDrawVario(displayPort_t *display, unsigned gx, unsigned gy, float zvel)
 {
     int v = zvel / OSD_VARIO_CM_S_PER_ARROW;
-    uint8_t vchars[] = {SYM_BLANK, SYM_BLANK, SYM_BLANK, SYM_BLANK, SYM_BLANK};
+    uint16_t vchars[] = {SYM_BLANK, SYM_BLANK, SYM_BLANK, SYM_BLANK, SYM_BLANK};
 
     if (v >= 6)
         vchars[0] = SYM_VARIO_UP_2A;
@@ -140,12 +140,27 @@ void osdGridDrawArtificialHorizon(displayPort_t *display, unsigned gx, unsigned 
         }
     }
 
+    int8_t ahiPitchAngleDatum;     // sets the pitch datum AHI is drawn relative to (degrees)
+    int8_t ahiLineEndPitchOffset;  // AHI end of line offset in degrees when ahiPitchAngleDatum > 0
+
+    if (osdConfig()->ahi_pitch_interval) {
+        ahiPitchAngleDatum = osdConfig()->ahi_pitch_interval * (int8_t)(RADIANS_TO_DEGREES(pitchAngle) / osdConfig()->ahi_pitch_interval);
+        pitchAngle -= DEGREES_TO_RADIANS(ahiPitchAngleDatum);
+    } else {
+        ahiPitchAngleDatum = 0;
+    }
+
     if (fabsf(ky) < fabsf(kx)) {
 
         previous_orient = 0;
 
+        /* ahi line ends drawn with 3 deg offset when ahiPitchAngleDatum > 0
+         * Line end offset increased by 1 deg with every 20 deg pitch increase */
+        const int8_t ahiLineEndOffsetFactor = ahiPitchAngleDatum / 20;
+
         for (int8_t dx = -OSD_AHI_WIDTH / 2; dx <= OSD_AHI_WIDTH / 2; dx++) {
-            float fy = (ratio * dx) * (ky / kx) + pitchAngle * pitch_rad_to_char + 0.49f;
+            ahiLineEndPitchOffset = ahiPitchAngleDatum && (dx == -OSD_AHI_WIDTH / 2 || dx == OSD_AHI_WIDTH / 2) ? -(ahiLineEndOffsetFactor + 3 * ABS(ahiPitchAngleDatum) / ahiPitchAngleDatum) : 0;
+            float fy = (ratio * dx) * (ky / kx) + (pitchAngle + DEGREES_TO_RADIANS(ahiLineEndPitchOffset)) * pitch_rad_to_char + 0.49f;
             int8_t dy = floorf(fy);
             const uint8_t chX = elemPosX + dx, chY = elemPosY - dy;
             uint16_t c;
@@ -220,11 +235,11 @@ void osdGridDrawHeadingGraph(displayPort_t *display, unsigned gx, unsigned gy, i
     displayWrite(display, gx, gy, buf);
 }
 
-static uint8_t osdUpdateSidebar(osd_sidebar_scroll_e scroll, osd_sidebar_t *sidebar, timeMs_t currentTimeMs)
+static uint16_t osdUpdateSidebar(osd_sidebar_scroll_e scroll, osd_sidebar_t *sidebar, timeMs_t currentTimeMs)
 {
     // Scroll between SYM_AH_DECORATION_MIN and SYM_AH_DECORATION_MAX.
     // Zero scrolling should draw SYM_AH_DECORATION.
-    uint8_t decoration = SYM_AH_DECORATION;
+    uint16_t decoration = SYM_AH_DECORATION;
     int offset = 0;
     int steps;
     switch (scroll) {
@@ -291,8 +306,8 @@ void osdGridDrawSidebars(displayPort_t *display)
     static osd_sidebar_t right;
 
     timeMs_t currentTimeMs = millis();
-    uint8_t leftDecoration = osdUpdateSidebar(osdConfig()->left_sidebar_scroll, &left, currentTimeMs);
-    uint8_t rightDecoration = osdUpdateSidebar(osdConfig()->right_sidebar_scroll, &right, currentTimeMs);
+    uint16_t leftDecoration = osdUpdateSidebar(osdConfig()->left_sidebar_scroll, &left, currentTimeMs);
+    uint16_t rightDecoration = osdUpdateSidebar(osdConfig()->right_sidebar_scroll, &right, currentTimeMs);
 
     const int hudwidth = OSD_AH_SIDEBAR_WIDTH_POS;
     const int hudheight = osdConfig()->sidebar_height;

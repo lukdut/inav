@@ -42,6 +42,7 @@
 #include "drivers/compass/compass_lis3mdl.h"
 #include "drivers/compass/compass_rm3100.h"
 #include "drivers/compass/compass_vcm5883.h"
+#include "drivers/compass/compass_mlx90393.h"
 #include "drivers/compass/compass_msp.h"
 #include "drivers/io.h"
 #include "drivers/light_led.h"
@@ -63,7 +64,7 @@ mag_t mag;                   // mag access functions
 
 #ifdef USE_MAG
 
-PG_REGISTER_WITH_RESET_TEMPLATE(compassConfig_t, compassConfig, PG_COMPASS_CONFIG, 5);
+PG_REGISTER_WITH_RESET_TEMPLATE(compassConfig_t, compassConfig, PG_COMPASS_CONFIG, 6);
 
 PG_RESET_TEMPLATE(compassConfig_t, compassConfig,
     .mag_align = SETTING_ALIGN_MAG_DEFAULT,
@@ -79,7 +80,7 @@ PG_RESET_TEMPLATE(compassConfig_t, compassConfig,
     .magGain = {SETTING_MAGGAIN_X_DEFAULT, SETTING_MAGGAIN_Y_DEFAULT, SETTING_MAGGAIN_Z_DEFAULT},
 );
 
-static uint8_t magUpdatedAtLeastOnce = 0;
+static bool magUpdatedAtLeastOnce = false;
 
 bool compassDetect(magDev_t *dev, magSensor_e magHardwareToUse)
 {
@@ -136,19 +137,6 @@ bool compassDetect(magDev_t *dev, magSensor_e magHardwareToUse)
 #ifdef USE_MAG_AK8963
         if (ak8963Detect(dev)) {
             magHardware = MAG_AK8963;
-            break;
-        }
-#endif
-        /* If we are asked for a specific sensor - break out, otherwise - fall through and continue */
-        if (magHardwareToUse != MAG_AUTODETECT) {
-            break;
-        }
-        FALLTHROUGH;
-
-    case MAG_GPS:
-#ifdef USE_GPS
-        if (gpsMagDetect(dev)) {
-            magHardware = MAG_GPS;
             break;
         }
 #endif
@@ -260,6 +248,19 @@ bool compassDetect(magDev_t *dev, magSensor_e magHardwareToUse)
         }
         FALLTHROUGH;
 
+    case MAG_MLX90393:
+#ifdef USE_MAG_MLX90393
+        if (mlx90393Detect(dev)) {
+            magHardware = MAG_MLX90393;
+            break;
+        }
+#endif
+        /* If we are asked for a specific sensor - break out, otherwise - fall through and continue */
+        if (magHardwareToUse != MAG_AUTODETECT) {
+            break;
+        }
+        FALLTHROUGH;
+
     case MAG_FAKE:
 #ifdef USE_FAKE_MAG
         if (fakeMagDetect(dev)) {
@@ -355,6 +356,12 @@ bool compassIsCalibrationComplete(void)
 
 void compassUpdate(timeUs_t currentTimeUs)
 {
+#ifdef USE_SIMULATOR
+	if (ARMING_FLAG(SIMULATOR_MODE)) {
+		magUpdatedAtLeastOnce = true;
+		return;
+	}
+#endif
     static sensorCalibrationState_t calState;
     static timeUs_t calStartedAt = 0;
     static int16_t magPrev[XYZ_AXIS_COUNT];
@@ -472,6 +479,6 @@ void compassUpdate(timeUs_t currentTimeUs)
         applyBoardAlignment(mag.magADC);
     }
 
-    magUpdatedAtLeastOnce = 1;
+    magUpdatedAtLeastOnce = true;
 }
 #endif

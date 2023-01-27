@@ -1,13 +1,13 @@
 /*
- * This file is part of iNav.
+ * This file is part of INAV.
  *
- * iNav is free software. You can redistribute this software
+ * INAV is free software. You can redistribute this software
  * and/or modify this software under the terms of the
  * GNU General Public License as published by the Free Software
  * Foundation, either version 3 of the License, or (at your option)
  * any later version.
  *
- * iNav is distributed in the hope that they will be
+ * INAV is distributed in the hope that they will be
  * useful, but WITHOUT ANY WARRANTY; without even the implied
  * warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  * See the GNU General Public License for more details.
@@ -39,8 +39,11 @@
 #define AVAILABLE_FIRMWARE_SPACE (FLASH_END - FIRMWARE_START_ADDRESS)
 
 extern uint8_t __firmware_start; // set via linker
+
+#if defined(CONFIG_IN_FLASH)
 extern uint8_t __config_start;
 extern uint8_t __config_end;
+#endif
 
 typedef struct {
     uint32_t magic;
