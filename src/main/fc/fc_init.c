@@ -96,6 +96,7 @@
 #include "flight/power_limits.h"
 #include "flight/rpm_filter.h"
 #include "flight/servos.h"
+#include "flight/secondary_imu.h"
 
 #include "io/asyncfatfs/asyncfatfs.h"
 #include "io/beeper.h"
@@ -676,6 +677,9 @@ void init(void)
     latchActiveFeatures();
     motorControlEnable = true;
 
+#ifdef USE_SECONDARY_IMU
+    secondaryImuInit();
+#endif
     fcTasksInit();
 
 #ifdef USE_OSD

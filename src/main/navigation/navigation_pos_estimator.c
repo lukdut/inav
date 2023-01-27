@@ -39,6 +39,7 @@
 #include "fc/rc_modes.h"
 
 #include "flight/imu.h"
+#include "flight/secondary_imu.h"
 
 #include "io/gps.h"
 
@@ -217,6 +218,9 @@ void onNewGPSData(void)
             if (positionEstimationConfig()->automatic_mag_declination && !magDeclinationSet) {
                 const float declination = geoCalculateMagDeclination(&newLLH);
                 imuSetMagneticDeclination(declination);
+#ifdef USE_SECONDARY_IMU
+                secondaryImuSetMagneticDeclination(declination);
+#endif
                 magDeclinationSet = true;
             }
         }
